@@ -170,26 +170,25 @@ type serverCapabilities struct {
 	} `json:"completionProvider"`
 }
 
-// syncKind is the server's TextDocumentSyncKind (0 none, 1 full,
-// 2 incremental); either a number or an options object.
-func (c serverCapabilities) syncKind() int {
+// syncOptions is the document synchronization the server asked for: open
+// and close notifications, and the TextDocumentSyncKind of changes (0 none,
+// 1 full, 2 incremental). A number gives both; an options object gives each,
+// and what it leaves out is not sent.
+func (c serverCapabilities) syncOptions() (openClose bool, change int) {
 	raw := c.TextDocumentSync
 	if len(raw) == 0 {
-		return 0
+		return false, 0
 	}
 	var n int
 	if json.Unmarshal(raw, &n) == nil {
-		return n
+		return n > 0, n
 	}
 	var o struct {
 		Change    int  `json:"change"`
 		OpenClose bool `json:"openClose"`
 	}
 	if json.Unmarshal(raw, &o) == nil {
-		if o.Change == 0 && o.OpenClose {
-			return 1 // open/close only: still worth opening the document
-		}
-		return o.Change
+		return o.OpenClose, o.Change
 	}
-	return 1
+	return false, 0
 }

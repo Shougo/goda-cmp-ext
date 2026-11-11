@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/textproto"
@@ -34,7 +35,10 @@ func TestMain(m *testing.M) {
 // fakeServer speaks just enough LSP: UTF-16 positions, trigger character
 // ".", partial results, resolve that adds documentation and an import edit,
 // and a workspace/configuration request whose answer it reports back as a
-// completion item.
+// completion item. $GODA_LSP_FAKE_SYNC is its textDocumentSync (JSON;
+// default 1), $GODA_LSP_FAKE_LOG a file it writes the method of every
+// message it gets to, and with $GODA_LSP_FAKE_NO_SHUTDOWN it does not
+// answer shutdown.
 func fakeServer(r io.Reader, w io.Writer) {
 	br := bufio.NewReader(r)
 	tp := textproto.NewReader(br)
@@ -57,6 +61,18 @@ func fakeServer(r io.Reader, w io.Writer) {
 		// for it, so that the test does not depend on timing.
 		waiting func()
 	)
+	syncCap := json.RawMessage("1")
+	if v := os.Getenv("GODA_LSP_FAKE_SYNC"); v != "" {
+		syncCap = json.RawMessage(v)
+	}
+	var logw io.Writer = io.Discard
+	if path := os.Getenv("GODA_LSP_FAKE_LOG"); path != "" {
+		f, err := os.Create(path)
+		if err == nil {
+			defer f.Close()
+			logw = f
+		}
+	}
 	for {
 		body, err := readFrame(tp, br)
 		if err != nil {
@@ -71,6 +87,9 @@ func fakeServer(r io.Reader, w io.Writer) {
 		_ = json.Unmarshal(body, &m)
 		var p map[string]any
 		_ = json.Unmarshal(m.Params, &p)
+		if m.Method != "" {
+			fmt.Fprintln(logw, m.Method)
+		}
 		reply := func(v any) { send(map[string]any{"id": m.ID, "result": v}) }
 
 		switch m.Method {
@@ -91,7 +110,7 @@ func fakeServer(r io.Reader, w io.Writer) {
 		case "initialize":
 			reply(map[string]any{"capabilities": map[string]any{
 				"positionEncoding": "utf-16",
-				"textDocumentSync": 1,
+				"textDocumentSync": syncCap,
 				"completionProvider": map[string]any{
 					"triggerCharacters": []string{"."},
 					"resolveProvider":   true,
@@ -193,7 +212,9 @@ func fakeServer(r io.Reader, w io.Writer) {
 			}}
 			reply(p)
 		case "shutdown":
-			reply(nil)
+			if os.Getenv("GODA_LSP_FAKE_NO_SHUTDOWN") == "" {
+				reply(nil)
+			}
 		case "exit":
 			return
 		}
@@ -225,7 +246,7 @@ func newFake(t *testing.T, p Params) (*Source, *cmptest.Editor) {
 	}
 	p.Name = "fake"
 	p.Command = []string{exe}
-	p.Env = []string{"GODA_LSP_FAKE=1"}
+	p.Env = append([]string{"GODA_LSP_FAKE=1"}, p.Env...)
 	p.RootMarkers = []string{"marker"}
 	p.Settings = map[string]any{"fake": map[string]any{"flavour": "mint"}}
 	p.InitTimeout = 10 * time.Second
@@ -516,5 +537,146 @@ func TestApplyEdits(t *testing.T) {
 	}
 	if l, col := ed.Cursor(); l != 5 || col != 17 {
 		t.Errorf("cursor = %d, %d, want 5, 17", l, col)
+	}
+}
+
+// fakeLog runs the fake server with env, has f use it, stops it and returns
+// the methods it got.
+func fakeLog(t *testing.T, env []string, f func(s *Source, ed *cmptest.Editor)) []string {
+	t.Helper()
+	log := filepath.Join(t.TempDir(), "methods")
+	s, ed := newFake(t, Params{Env: append(env, "GODA_LSP_FAKE_LOG="+log)})
+	f(s, ed)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = s.Close(ctx)
+	b, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Fields(string(b))
+}
+
+// Only the synchronization the server asked for is sent: with an options
+// object, open and close only with openClose, and changes only with change.
+func TestSyncOptions(t *testing.T) {
+	type sent struct{ open, change, close int }
+	count := func(methods []string) sent {
+		var s sent
+		for _, m := range methods {
+			switch m {
+			case "textDocument/didOpen":
+				s.open++
+			case "textDocument/didChange":
+				s.change++
+			case "textDocument/didClose":
+				s.close++
+			}
+		}
+		return s
+	}
+	for _, tc := range []struct {
+		sync string
+		want sent
+	}{
+		{"1", sent{1, 1, 1}},
+		{"0", sent{}},
+		{`{"change": 1}`, sent{}},
+		{`{"openClose": true}`, sent{1, 0, 1}},
+		{`{"openClose": true, "change": 2}`, sent{1, 1, 1}},
+	} {
+		methods := fakeLog(t, []string{"GODA_LSP_FAKE_SYNC=" + tc.sync}, func(s *Source, ed *cmptest.Editor) {
+			h := ed.Host()
+			ed.SetLines(1, "x.al")
+			gather(t, s, h, &cmp.Context{Bufnr: 1, Tick: 1, Lnum: 1, Input: "x.al"})
+			ed.SetLines(1, "x.alp")
+			gather(t, s, h, &cmp.Context{Bufnr: 1, Tick: 2, Lnum: 1, Input: "x.alp"})
+			path, _ := h.Call(context.Background(), "bufname", 1)
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			if err := s.OnEvent(ctx, h, cmp.Event{Name: "BufDelete", Bufnr: 1, Path: path.(string)}); err != nil {
+				t.Fatal(err)
+			}
+		})
+		if got := count(methods); got != tc.want {
+			t.Errorf("textDocumentSync %s: sent %+v, want %+v (%q)", tc.sync, got, tc.want, methods)
+		}
+	}
+}
+
+// exit follows shutdown, also when shutdown gets no answer; nothing else
+// does (not even $/cancelRequest for shutdown).
+func TestShutdownExit(t *testing.T) {
+	for _, env := range [][]string{nil, {"GODA_LSP_FAKE_NO_SHUTDOWN=1"}} {
+		methods := fakeLog(t, env, func(s *Source, ed *cmptest.Editor) {
+			ed.SetLines(1, "x.al")
+			gather(t, s, ed.Host(), &cmp.Context{Bufnr: 1, Tick: 1, Lnum: 1, Input: "x.al"})
+		})
+		i := slices.Index(methods, "shutdown")
+		if i < 0 || !slices.Equal(methods[i:], []string{"shutdown", "exit"}) {
+			t.Errorf("%q: got %q, want shutdown then exit last", env, methods)
+		}
+	}
+}
+
+// frames records what a conn writes.
+type frames struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (f *frames) Write(b []byte) (int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.buf.Write(b)
+}
+
+// methods are the methods written, "" for an answer.
+func (f *frames) methods() []string {
+	f.mu.Lock()
+	s := f.buf.String()
+	f.mu.Unlock()
+	br := bufio.NewReader(strings.NewReader(s))
+	tp := textproto.NewReader(br)
+	var out []string
+	for {
+		body, err := readFrame(tp, br)
+		if err != nil {
+			return out
+		}
+		var m message
+		_ = json.Unmarshal(body, &m)
+		out = append(out, m.Method)
+	}
+}
+
+// After shutdown, a request or a notification is refused without being
+// sent; exit and answers to the server's requests still go.
+func TestNothingAfterShutdown(t *testing.T) {
+	var f frames
+	c := newConn(&f)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = c.call(ctx, "shutdown", nil, nil) }()
+	for i := 0; len(f.methods()) == 0; i++ {
+		if i == 500 {
+			t.Fatal("shutdown not sent")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := c.notify("textDocument/didClose", map[string]any{}); !errors.Is(err, errShutdown) {
+		t.Errorf("didClose after shutdown: %v", err)
+	}
+	cctx, ccancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer ccancel()
+	if err := c.call(cctx, "textDocument/completion", map[string]any{}, nil); !errors.Is(err, errShutdown) {
+		t.Errorf("completion after shutdown: %v", err)
+	}
+	c.serveRequest(json.RawMessage("7"), "workspace/configuration", nil)
+	if err := c.notify("exit", nil); err != nil {
+		t.Errorf("exit: %v", err)
+	}
+	if got, want := f.methods(), []string{"shutdown", "", "exit"}; !slices.Equal(got, want) {
+		t.Errorf("sent %q, want %q", got, want)
 	}
 }

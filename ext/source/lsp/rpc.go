@@ -16,6 +16,10 @@ import (
 // errConnClosed is returned by calls on a connection whose server is gone.
 var errConnClosed = errors.New("lsp: connection closed")
 
+// errShutdown refuses a request or a notification after shutdown, which
+// only exit may follow (answers to the server's requests still go).
+var errShutdown = errors.New("lsp: server shutting down")
+
 // message is any JSON-RPC 2.0 message: a request (ID and Method), a
 // notification (Method only) or a response (ID, and Result or Error).
 type message struct {
@@ -53,6 +57,9 @@ type response struct {
 type conn struct {
 	w   io.Writer
 	wmu sync.Mutex
+	// stopped: shutdown was sent (guarded by wmu, so that nothing is
+	// written after it but what may be).
+	stopped bool
 
 	handleRequest      func(method string, params json.RawMessage) (any, error)
 	handleNotification func(method string, params json.RawMessage)
@@ -129,11 +136,19 @@ func (c *conn) send(m message) error {
 	}
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
+	if c.stopped && m.Method != "" && m.Method != "exit" {
+		return errShutdown
+	}
 	if _, err := fmt.Fprintf(c.w, "Content-Length: %d\r\n\r\n", len(b)); err != nil {
 		return err
 	}
-	_, err = c.w.Write(b)
-	return err
+	if _, err = c.w.Write(b); err != nil {
+		return err
+	}
+	if m.Method == "shutdown" && m.ID != nil {
+		c.stopped = true
+	}
+	return nil
 }
 
 func (c *conn) serveRequest(id json.RawMessage, method string, params json.RawMessage) {

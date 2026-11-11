@@ -3,6 +3,7 @@ package lsp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -261,10 +262,13 @@ func (cl *client) logMessage(params json.RawMessage) {
 
 // sync makes the server's copy of the document current. Vim gives no
 // changes, only the whole text, so it is full synchronization; a buffer whose
-// changedtick did not move is not sent again.
+// changedtick did not move is not sent again. Only what the server asked for
+// is sent: without open and close notifications, a document is never open
+// there, and so never changed either; without changes, it keeps the text it
+// was opened with.
 func (cl *client) sync(uri, languageID string, bufnr, tick int, text func() (string, error)) error {
-	kind := cl.caps.syncKind()
-	if kind == 0 {
+	openClose, change := cl.caps.syncOptions()
+	if !openClose {
 		return nil
 	}
 	cl.syncMu.Lock()
@@ -273,11 +277,11 @@ func (cl *client) sync(uri, languageID string, bufnr, tick int, text func() (str
 	if d != nil && d.bufnr == bufnr && d.tick == tick {
 		return nil
 	}
-	t, err := text()
-	if err != nil {
-		return err
-	}
 	if d == nil {
+		t, err := text()
+		if err != nil {
+			return err
+		}
 		d = &docState{bufnr: bufnr, tick: tick, version: 1}
 		cl.docs[uri] = d
 		return cl.conn.notify("textDocument/didOpen", map[string]any{
@@ -287,6 +291,13 @@ func (cl *client) sync(uri, languageID string, bufnr, tick int, text func() (str
 		})
 	}
 	d.bufnr, d.tick = bufnr, tick
+	if change == 0 {
+		return nil
+	}
+	t, err := text()
+	if err != nil {
+		return err
+	}
 	d.version++
 	return cl.conn.notify("textDocument/didChange", map[string]any{
 		"textDocument":   map[string]any{"uri": uri, "version": d.version},
@@ -302,9 +313,13 @@ func (cl *client) closeDoc(uri string) error {
 		return nil
 	}
 	delete(cl.docs, uri)
-	return cl.conn.notify("textDocument/didClose", map[string]any{
+	err := cl.conn.notify("textDocument/didClose", map[string]any{
 		"textDocument": map[string]any{"uri": uri},
 	})
+	if errors.Is(err, errShutdown) {
+		return nil // the server forgets every document anyway
+	}
+	return err
 }
 
 // complete asks for completion. onPartial receives items that arrive as
@@ -348,7 +363,9 @@ func (cl *client) canResolve() bool {
 	return cl.caps.CompletionProvider != nil && cl.caps.CompletionProvider.ResolveProvider
 }
 
-// shutdown stops the server politely, then by force when ctx ends.
+// shutdown stops the server politely, then by force when ctx ends. exit
+// follows shutdown also when shutdown got no answer in time: the server may
+// still end by itself, and kill is only for one that does not.
 func (cl *client) shutdown(ctx context.Context) {
 	select {
 	case <-cl.ready:
@@ -358,10 +375,9 @@ func (cl *client) shutdown(ctx context.Context) {
 	}
 	if cl.initErr == nil {
 		sctx, cancel := context.WithTimeout(ctx, time.Second)
-		if cl.conn.call(sctx, "shutdown", nil, nil) == nil {
-			_ = cl.conn.notify("exit", nil)
-		}
+		_ = cl.conn.call(sctx, "shutdown", nil, nil)
 		cancel()
+		_ = cl.conn.notify("exit", nil)
 	}
 	select {
 	case <-cl.exited:
