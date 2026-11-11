@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: go ${{ matrix.go }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The oldest Go the module supports, and the newest.
+        go: ['1.26', 'stable']
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      # The end-to-end tests (of ext/source/lsp) run in every editor they
+      # find, with goda-cmp.vim and goda.vim of go.mod.
+      - name: Install Vim
+        uses: rhysd/action-setup-vim@v1.6.1
+        with:
+          version: stable
+      - name: Install Neovim
+        uses: rhysd/action-setup-vim@v1.6.1
+        with:
+          neovim: true
+          version: stable
+      # For ext/source/shellnative.
+      - name: Install zsh
+        run: sudo apt-get install -y zsh
+      # After the editors: installing them may put a directory with the
+      # runner's own, older Go first in PATH.
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version: ${{ matrix.go }}
+      # For ext/source/lsp.
+      - name: Install gopls
+        run: go install golang.org/x/tools/gopls@latest
+        env:
+          # setup-go sets GOTOOLCHAIN=local, which would refuse the newer Go
+          # the latest gopls needs.
+          GOTOOLCHAIN: auto
+      - run: go version && vim --version | head -n 3 && nvim --version | head -n 1 && gopls version
+      - run: gofmt -l . | tee /dev/stderr | (! read)
+      - run: go vet ./...
+      - run: go test -race ./...
+
+  # Windows and macOS: vet and the tests that need no editor, shell or
+  # language server (-short; those run on Linux above).
+  other:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    steps:
+      # Keep the line endings of the repository (the embedded Vim and shell
+      # scripts, and gofmt on Linux).
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version: stable
+      - run: go version
+      - run: go vet ./...
+      - run: go test -short ./...
