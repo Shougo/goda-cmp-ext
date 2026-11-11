@@ -39,6 +39,7 @@ func TestRealGopls(t *testing.T) {
 	  [":w\r", 0.5]
 	]`
 		ds := e2e.Drive(t, ed, e2e.Options{Bin: bin, File: path, Steps: steps,
+			RTP: []string{e2e.ModuleDir(t, "github.com/Shougo/goda-cmp-ui-native.vim")},
 			Env: []string{"GODA_GOPLS=" + p.Command[0]}})
 		// The popup shows the label and, from newer gopls, its
 		// labelDetails ("Println(a ...any)"): compare the names only.
