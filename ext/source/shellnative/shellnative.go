@@ -21,6 +21,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Shougo/goda-cmp-ext/ext/source/shellhistory"
 	"github.com/Shougo/goda-cmp.vim/cmp"
@@ -55,6 +56,10 @@ type state struct {
 	// waiting (superseded, or too slow): each answer is for the oldest
 	// question, so they are read and dropped first.
 	stale int
+	// started: when Init started the shell last; closed: Close was called
+	// (the shell is not started again).
+	started time.Time
+	closed  bool
 }
 
 // New returns the source, named "shellnative".
@@ -160,15 +165,52 @@ func (s source) Init(ctx context.Context, h sdk.Host) error {
 	}()
 	s.st.mu.Lock()
 	s.st.cmd, s.st.dir, s.st.in, s.st.out, s.st.cwd, s.st.dead = cmd, dir, in, out, cwd, dead
+	s.st.stale, s.st.started = 0, time.Now()
 	s.st.mu.Unlock()
 	return nil
+}
+
+// restartInterval is the least time between two starts of the shell.
+const restartInterval = time.Second
+
+// ensure starts the shell again when it exited: its capture script gives up
+// a pty that does not answer (or answers without end), whose state is
+// unknown then. Not more often than restartInterval, so that a shell that
+// cannot start is not started at every key.
+func (s source) ensure(ctx context.Context, h sdk.Host) error {
+	s.st.mu.Lock()
+	if s.st.cmd != nil {
+		select {
+		case <-s.st.dead:
+			s.st.cmd = nil
+		default:
+		}
+	}
+	if s.st.cmd != nil || s.st.closed {
+		s.st.mu.Unlock()
+		return nil
+	}
+	if time.Since(s.st.started) < restartInterval {
+		s.st.mu.Unlock()
+		return fmt.Errorf("the shell exited")
+	}
+	if s.st.dir != "" {
+		os.RemoveAll(s.st.dir)
+		s.st.dir = ""
+	}
+	s.st.mu.Unlock()
+	return s.Init(ctx, h)
 }
 
 // Close stops the shell.
 func (s source) Close(context.Context) error {
 	s.st.mu.Lock()
 	defer s.st.mu.Unlock()
+	s.st.closed = true
 	if s.st.cmd == nil {
+		if s.st.dir != "" {
+			os.RemoveAll(s.st.dir)
+		}
 		return nil
 	}
 	s.st.in.Close()
@@ -255,6 +297,9 @@ func (s source) Gather(ctx context.Context, h sdk.Host, c *cmp.Context) (cmp.Gat
 	cwd := ""
 	if v, err := h.Call(ctx, "getcwd"); err == nil {
 		cwd, _ = v.(string)
+	}
+	if err := s.ensure(ctx, h); err != nil {
+		return cmp.Gathered{}, err
 	}
 	lines, err := s.complete(ctx, input, cwd)
 	if err != nil {
