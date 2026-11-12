@@ -48,3 +48,31 @@ func TestGather(t *testing.T) {
 		t.Errorf("start %d words %q", g.Start, ws)
 	}
 }
+
+// A command of several lines is one, not a command a line; not an item.
+func TestHistorySeveralLines(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "hist")
+	data := "git status\n: 1:0;git tag -m \"v1\\\n\\\n- fix\"\ngit tag -m \"v2\\\n- more\"\ngit stash\n"
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"git stash", "git tag -m \"v2\n- more\"", "git tag -m \"v1\n\n- fix\"", "git status"}
+	if got := History(path, 10); !reflect.DeepEqual(got, want) {
+		t.Errorf("History = %q, want %q", got, want)
+	}
+	t.Setenv("HISTDIR", dir)
+	src := New(Params{Paths: []string{"$HISTDIR/hist"}, Limit: 10})
+	h := &cmptest.Host{Funcs: map[string]func(...any) (any, error){}}
+	g, err := src.Gather(context.Background(), h, &cmp.Context{Mode: "t", Input: "git "})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ws []string
+	for _, it := range g.Items {
+		ws = append(ws, it.Word)
+	}
+	if want := []string{"stash", "status"}; !reflect.DeepEqual(ws, want) {
+		t.Errorf("items %q, want %q", ws, want)
+	}
+}

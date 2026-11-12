@@ -69,7 +69,9 @@ func (s source) Gather(ctx context.Context, h sdk.Host, c *cmp.Context) (cmp.Gat
 	before := input[:max(0, len(input)-(len(c.Input)-start))]
 	items := make([]cmp.Item, 0, len(hist))
 	for _, w := range hist {
-		if strings.HasPrefix(w, before) {
+		// (A command of several lines cannot be an item: Vim would insert
+		// its new lines as NUL.)
+		if strings.HasPrefix(w, before) && !strings.Contains(w, "\n") {
 			items = append(items, cmp.Item{Word: w[len(before):]})
 		}
 	}
@@ -101,7 +103,7 @@ func ShellInput(ctx context.Context, h sdk.Host, c *cmp.Context) (string, error)
 	return c.Input, nil
 }
 
-var extended = regexp.MustCompile(`^: \d+:\d+;(.*)`)
+var extended = regexp.MustCompile(`(?s)^: \d+:\d+;(.*)`)
 
 // History returns the limit newest commands of the history file path, each
 // once, the newest first. (ddc-source-shell_history keeps the limit oldest of
@@ -113,8 +115,19 @@ func History(path string, limit int) []string {
 		return nil
 	}
 	var cmds []string
+	var cont []string
 	for line := range bytes.SplitSeq(data, []byte("\n")) {
 		l := string(line)
+		// A command of several lines (zsh, goda-term-ui-shell): a
+		// backslash at the end of each line but the last.
+		if strings.HasSuffix(l, "\\") {
+			cont = append(cont, strings.TrimSuffix(l, "\\"))
+			continue
+		}
+		if cont != nil {
+			l = strings.Join(append(cont, l), "\n")
+			cont = nil
+		}
 		if m := extended.FindStringSubmatch(l); m != nil {
 			l = m[1]
 		}
