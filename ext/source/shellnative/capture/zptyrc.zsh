@@ -34,6 +34,14 @@ bindkey '^B' backward-char
 bindkey '^I' complete-word
 bindkey '^U' kill-buffer
 
+# Tell the capture script that zle reads the line: the terminal is raw from
+# then on. Input written sooner (while the rcfile or `cd` runs) is taken by
+# the tty in its cooked mode, and is not the line zle completes.
+zle-line-init() {
+    print -rn -- $'\x02ready\x02'
+}
+zle -N zle-line-init
+
 # Never run commands, except `cd`
 setopt debug_before_cmd
 DEBUGTRAP() {

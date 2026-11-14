@@ -67,6 +67,53 @@ func TestZsh(t *testing.T) {
 	}
 }
 
+// Each completion is in the directory of its request: the input is written
+// once zle reads the line after the `cd` (the tty takes input written sooner
+// in its cooked mode, and zle completes another line).
+func TestChdir(t *testing.T) {
+	if testing.Short() {
+		t.Skip("starts zsh")
+	}
+	if _, err := exec.LookPath("zsh"); err != nil {
+		t.Skip("zsh is not installed")
+	}
+	dirs := []string{t.TempDir(), t.TempDir()}
+	for i, d := range dirs {
+		name := filepath.Join(d, "goda-"+string(rune('a'+i))+".txt")
+		if err := os.WriteFile(name, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cwd := dirs[0]
+	home := t.TempDir()
+	src := New(Params{Shell: "zsh"}).(source)
+	h := &cmptest.Host{Funcs: map[string]func(...any) (any, error){
+		"getcwd":  func(...any) (any, error) { return cwd, nil },
+		"environ": func(...any) (any, error) { return map[string]any{"PATH": os.Getenv("PATH"), "HOME": home}, nil },
+	}}
+	ctx := context.Background()
+	if err := src.Init(ctx, h); err != nil {
+		t.Fatal(err)
+	}
+	defer src.Close(ctx)
+	// The first one too, at once after the start.
+	for i := range 6 {
+		cwd = dirs[(i+1)%2]
+		want := "goda-" + string(rune('a'+(i+1)%2)) + ".txt"
+		g, err := src.Gather(ctx, h, &cmp.Context{Mode: "t", Input: "cat goda-"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ws []string
+		for _, it := range g.Items {
+			ws = append(ws, it.Word)
+		}
+		if !reflect.DeepEqual(ws, []string{want}) {
+			t.Errorf("in %s: words %q, want %q", cwd, ws, want)
+		}
+	}
+}
+
 // A request that gives up does not get its answer read by the next one.
 func TestStaleAnswer(t *testing.T) {
 	if testing.Short() {

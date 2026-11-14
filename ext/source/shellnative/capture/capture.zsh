@@ -33,19 +33,22 @@ read_until_nuls() {
     return 0
 }
 
-# read_until_ok: the output up to "ok" at the end of a line (the rcfile is
-# sourced), within 30 seconds (compinit).
-read_until_ok() {
+# The mark zle-line-init writes (zptyrc.zsh) when zle reads a line.
+READY=$'\x02ready\x02'
+
+# read_until_ready: the output up to $READY, within $1 seconds. Input must
+# not be written before: the tty would take it in its cooked mode (echoing
+# it, and joining it to what is written next), and zle would complete
+# another line.
+read_until_ready() {
     local chunk
-    local -F deadline=$(( EPOCHREALTIME + 30 ))
+    local -F deadline=$(( EPOCHREALTIME + $1 ))
     line=
-    while [[ $line != *ok$'\r'(|$'\n') ]]; do
+    while [[ $line != *$READY* ]]; do
         (( EPOCHREALTIME < deadline )) || return 1
         if zpty -r -t z chunk; then
             line+=$chunk
             (( $#line <= MAX_OUTPUT )) || return 1
-            # Only the last line matters.
-            [[ $chunk == *$'\n' ]] && [[ $line != *ok$'\r'$'\n' ]] && line=
         elif ! zpty -t z; then
             return 1
         else
@@ -68,8 +71,9 @@ zpty_fd=$REPLY
 local line=
 
 # Initialize shell settings before processing
-zpty -w z "source ${(qq)zpty_rcfile} && echo ok || exit 2"
-read_until_ok || { echo "error: pty initialization failure" >&2; exit 2 }
+zpty -w z "source ${(qq)zpty_rcfile} || exit 2"
+# Within 30 seconds (compinit).
+read_until_ready 30 || { echo "error: pty initialization failure" >&2; exit 2 }
 
 # Constants
 MSG_CHDIR="chdir:"
@@ -93,6 +97,8 @@ while true; do
             # Change the current working directory in the pty
             local new_cwd=${message#$MSG_CHDIR}
             zpty -w -n z "${KILL_BUFFER}cd ${(qq)new_cwd}${ACCEPT_LINE}"
+            # Until zle reads the next line.
+            read_until_ready $READ_TIMEOUT || { echo "error: pty chdir failure" >&2; exit 1 }
             continue
             ;;
         $MSG_INPUT*)
