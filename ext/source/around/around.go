@@ -4,8 +4,6 @@ package around
 
 import (
 	"context"
-	"strings"
-	"unicode"
 
 	"github.com/Shougo/goda-cmp.vim/cmp"
 	"github.com/Shougo/goda.vim/sdk"
@@ -80,7 +78,7 @@ func (s source) Gather(ctx context.Context, h sdk.Host, c *cmp.Context) (cmp.Gat
 				// On the cursor line only the text before the word counts.
 				line = c.Input[:start]
 			}
-			for _, w := range words(line) {
+			for _, w := range c.Words(line) {
 				if len([]rune(w)) < s.p.MinLength || seen[w] {
 					continue
 				}
@@ -93,8 +91,4 @@ func (s source) Gather(ctx context.Context, h sdk.Host, c *cmp.Context) (cmp.Gat
 		}
 	}
 	return cmp.Gathered{Start: start, Items: items}, nil
-}
-
-func words(line string) []string {
-	return strings.FieldsFunc(line, func(r rune) bool { return !(r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r)) })
 }

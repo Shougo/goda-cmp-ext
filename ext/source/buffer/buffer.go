@@ -11,9 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 	"sync"
-	"unicode"
 
 	"github.com/Shougo/goda-cmp.vim/cmp"
 	"github.com/Shougo/goda.vim/sdk"
@@ -40,14 +38,18 @@ type bufCache struct {
 	filetype string
 	name     string
 	tick     int64
-	words    []string
+	lines    []string
+	// words are the words of lines by keyword pattern (Context.Words), found
+	// when the pattern is first used: it is that of the buffer completed.
+	words map[string][]string
 }
 
 type source struct {
 	p  Params
 	mu *sync.Mutex
 	// buffers is shared by the values WithParams makes: the words do not
-	// depend on the parameters, only what is offered does.
+	// depend on the parameters, only what is offered does. Use it with mu
+	// held.
 	buffers map[int]*bufCache
 }
 
@@ -127,19 +129,12 @@ func (s source) read(ctx context.Context, h sdk.Host, bufnr int, filetype string
 			return nil
 		}
 	}
-	seen := map[string]bool{}
-	var words []string
-	for _, x := range rawLines {
-		line, _ := x.(string)
-		for _, w := range keywords(line) {
-			if !seen[w] {
-				seen[w] = true
-				words = append(words, w)
-			}
-		}
+	lines := make([]string, len(rawLines))
+	for i, x := range rawLines {
+		lines[i], _ = x.(string)
 	}
 	s.mu.Lock()
-	s.buffers[bufnr] = &bufCache{filetype: filetype, name: name, tick: toInt64(l[2]), words: words}
+	s.buffers[bufnr] = &bufCache{filetype: filetype, name: name, tick: toInt64(l[2]), lines: lines, words: map[string][]string{}}
 	s.mu.Unlock()
 	return nil
 }
@@ -226,17 +221,32 @@ func (s source) Gather(ctx context.Context, h sdk.Host, c *cmp.Context) (cmp.Gat
 		case "basename":
 			menu = filepath.Base(buf.name)
 		}
-		for _, w := range buf.words {
+		for _, w := range buf.wordsOf(c) {
 			items = append(items, cmp.Item{Word: w, Menu: menu})
 		}
 	}
 	return cmp.Gathered{Start: c.KeywordStart(), Items: items}, nil
 }
 
-func keywords(line string) []string {
-	return strings.FieldsFunc(line, func(r rune) bool {
-		return !(r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r))
-	})
+// wordsOf returns the words of the buffer by the keyword pattern of c,
+// each once.
+func (b *bufCache) wordsOf(c *cmp.Context) []string {
+	p := c.KeywordPattern()
+	if words, ok := b.words[p]; ok {
+		return words
+	}
+	seen := map[string]bool{}
+	words := []string{}
+	for _, line := range b.lines {
+		for _, w := range c.Words(line) {
+			if !seen[w] {
+				seen[w] = true
+				words = append(words, w)
+			}
+		}
+	}
+	b.words[p] = words
+	return words
 }
 
 func toInt64(v any) int64 {

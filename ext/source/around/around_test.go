@@ -30,3 +30,23 @@ func TestGather(t *testing.T) {
 		t.Errorf("the words of the line above come first: %q", words)
 	}
 }
+
+// The words are those of the keywordPattern of the source.
+func TestKeywordPattern(t *testing.T) {
+	h := cmptest.Lines("|  M vim/rc/goda-cmp/config.go", "% git add vim/rc")
+	c := &cmp.Context{Bufnr: 1, Lnum: 2, Input: "% git add vim/rc"}
+	if err := c.SetKeywordPattern(`[0-9a-zA-Z_./#:-]*`); err != nil {
+		t.Fatal(err)
+	}
+	g, err := around.New(around.Params{}).Gather(context.Background(), h, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var words []string
+	for _, it := range g.Items {
+		words = append(words, it.Word)
+	}
+	if g.Start != 10 || !slices.Contains(words, "vim/rc/goda-cmp/config.go") || slices.Contains(words, "config") {
+		t.Errorf("start %d words %q", g.Start, words)
+	}
+}
