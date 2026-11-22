@@ -273,7 +273,7 @@ var (
 func (s source) Gather(ctx context.Context, h sdk.Host, c *cmp.Context) (cmp.Gathered, error) {
 	none := cmp.Gathered{Start: len(c.Input), Incomplete: true}
 	start := target.FindStringIndex(c.Input)[0]
-	input := c.Input
+	var input string
 	if c.Mode == "c" {
 		if !shellCommand(ctx, h, c.Input) {
 			return none, nil
