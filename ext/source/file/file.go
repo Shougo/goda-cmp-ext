@@ -390,18 +390,10 @@ func infoExpr(input, chars string, posix bool) string {
 
 func vimString(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
 
+// toInt is the integer of a number from the editor, -1 for another value.
 func toInt(v any) int {
-	switch n := v.(type) {
-	case int64:
-		return int(n)
-	case uint64:
-		return int(n)
-	case int:
+	if n, ok := sdk.Int(v); ok {
 		return n
-	case int8:
-		return int(n)
-	case float64:
-		return int(n)
 	}
 	return -1
 }

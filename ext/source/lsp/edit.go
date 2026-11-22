@@ -118,18 +118,8 @@ func deleteAfterCursor(ctx context.Context, h sdk.Host, bufnr int, tail string) 
 	return err
 }
 
+// toInt is the integer of a number from the editor, 0 for another value.
 func toInt(v any) int {
-	switch n := v.(type) {
-	case int64:
-		return int(n)
-	case int:
-		return n
-	case float64:
-		return int(n)
-	case bool:
-		if n {
-			return 1
-		}
-	}
-	return 0
+	n, _ := sdk.Int(v)
+	return n
 }

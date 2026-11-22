@@ -249,20 +249,10 @@ func (b *bufCache) wordsOf(c *cmp.Context) []string {
 	return words
 }
 
+// toInt64 is the integer of a number from the editor, 0 for another value.
 func toInt64(v any) int64 {
-	switch n := v.(type) {
-	case int64:
-		return n
-	case uint64:
-		return int64(n)
-	case int:
-		return int64(n)
-	case int8:
-		return int64(n)
-	case float64:
-		return int64(n)
-	}
-	return 0
+	n, _ := sdk.Int(v)
+	return int64(n)
 }
 
 var _ cmp.EventHandler = source{}

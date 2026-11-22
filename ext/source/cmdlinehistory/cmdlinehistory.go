@@ -139,20 +139,10 @@ func History(ctx context.Context, h sdk.Host, cmdType string, limit int) ([]stri
 // vimString quotes s as a Vim string literal.
 func vimString(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
 
+// toInt is the integer of a number from the editor, 0 for another value.
 func toInt(v any) int {
-	switch n := v.(type) {
-	case int:
-		return n
-	case int64:
-		return int(n)
-	case uint64:
-		return int(n)
-	case int8:
-		return int(n)
-	case float64:
-		return int(n)
-	}
-	return 0
+	n, _ := sdk.Int(v)
+	return n
 }
 
 func toStrings(v any) []string {

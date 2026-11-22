@@ -27,7 +27,7 @@ func (source) Gather(ctx context.Context, h sdk.Host, c *cmp.Context) (cmp.Gathe
 	if err != nil {
 		return cmp.Gathered{}, err
 	}
-	start := int(toInt(v))
+	start := toInt(v)
 	if start < 0 {
 		return cmp.Gathered{Start: len(c.Input)}, nil
 	}
@@ -46,18 +46,10 @@ func (source) Gather(ctx context.Context, h sdk.Host, c *cmp.Context) (cmp.Gathe
 	return cmp.Gathered{Start: start, Items: items, Incomplete: true}, nil
 }
 
-func toInt(v any) int64 {
-	switch n := v.(type) {
-	case int64:
+// toInt is the integer of a number from the editor, -1 for another value.
+func toInt(v any) int {
+	if n, ok := sdk.Int(v); ok {
 		return n
-	case uint64:
-		return int64(n)
-	case int:
-		return int64(n)
-	case int8:
-		return int64(n)
-	case float64:
-		return int64(n)
 	}
 	return -1
 }
